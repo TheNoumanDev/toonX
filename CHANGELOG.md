@@ -1,3 +1,20 @@
+## 1.3.0
+
+-   **Removed Flutter dependency**: Now works in pure Dart environments (server-side, CLI, etc.)
+-   **Major performance improvements**: 2.2x faster round-trip (encode+decode)
+-   Encoder optimized: 59% faster (133ms → 55ms for 1000 records)
+-   Decoder optimized: 45% faster (120ms → 66ms for 1000 records)
+-   Cached RegExp patterns to avoid repeated compilation in hot loops
+-   Eliminated Set allocations in tabular format detection
+-   Optimized string escaping/unescaping with early-exit fast paths
+-   Replaced regex-based identifier validation with character code checks
+-   Added fast number detection without parsing overhead
+-   Optimized comma splitting with substring instead of StringBuffer
+-   Pre-allocated arrays with known sizes in decoder
+-   Used code units for character scanning (avoids 1-char String allocations)
+-   Cached indent strings in encoder (avoids repeated `' ' * n`)
+-   Added benchmark test for performance tracking
+
 ## 1.2.0
 
 -   Added XML support with `xmlToToon()` and `toonToXml()` functions

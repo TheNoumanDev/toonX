@@ -1,4 +1,29 @@
 /// Utility classes and functions for TOON encoding/decoding operations.
+library;
+
+// Character code constants for fast comparisons
+const _kBackslash = 0x5C; // \
+const _kQuote = 0x22; // "
+const _kNewline = 0x0A; // \n
+const _kCarriageReturn = 0x0D; // \r
+const _kTab = 0x09; // \t
+const _kSpace = 0x20; // space
+const _kColon = 0x3A; // :
+const _kComma = 0x2C; // ,
+const _kPipe = 0x7C; // |
+const _kOpenBracket = 0x5B; // [
+const _kCloseBracket = 0x5D; // ]
+const _kOpenBrace = 0x7B; // {
+const _kCloseBrace = 0x7D; // }
+const _kDash = 0x2D; // -
+const _kUnderscore = 0x5F; // _
+const _kDot = 0x2E; // .
+const _k0 = 0x30; // 0
+const _k9 = 0x39; // 9
+const _kA = 0x41; // A
+const _kZ = 0x5A; // Z
+const _ka = 0x61; // a
+const _kz = 0x7A; // z
 
 /// Exception thrown during TOON encoding or decoding operations.
 ///
@@ -26,24 +51,81 @@ class ToonException implements Exception {
 ///
 /// Escapes: backslash, quotes, newlines, carriage returns, tabs
 String escapeString(String value) {
-  return value
-      .replaceAll('\\', '\\\\')
-      .replaceAll('"', '\\"')
-      .replaceAll('\n', '\\n')
-      .replaceAll('\r', '\\r')
-      .replaceAll('\t', '\\t');
+  // Fast path: check if escaping needed (avoids allocations for common case)
+  var needsEscape = false;
+  for (var i = 0; i < value.length; i++) {
+    final c = value.codeUnitAt(i);
+    // Check for: \ (0x5C), " (0x22), \n (0x0A), \r (0x0D), \t (0x09)
+    if (c == 0x5C || c == 0x22 || c == 0x0A || c == 0x0D || c == 0x09) {
+      needsEscape = true;
+      break;
+    }
+  }
+  if (!needsEscape) return value; // No allocation!
+
+  // Slow path: build escaped string
+  final buffer = StringBuffer();
+  for (var i = 0; i < value.length; i++) {
+    final c = value.codeUnitAt(i);
+    switch (c) {
+      case _kBackslash:
+        buffer.write('\\\\');
+      case _kQuote:
+        buffer.write('\\"');
+      case _kNewline:
+        buffer.write('\\n');
+      case _kCarriageReturn:
+        buffer.write('\\r');
+      case _kTab:
+        buffer.write('\\t');
+      default:
+        buffer.writeCharCode(c);
+    }
+  }
+  return buffer.toString();
 }
 
 /// Unescapes special characters from a TOON string.
 ///
 /// Reverses the escaping done by [escapeString]
 String unescapeString(String value) {
-  return value
-      .replaceAll('\\n', '\n')
-      .replaceAll('\\r', '\r')
-      .replaceAll('\\t', '\t')
-      .replaceAll('\\"', '"')
-      .replaceAll('\\\\', '\\');
+  // Fast path: check if unescaping needed
+  if (!value.contains('\\')) return value; // No allocation!
+
+  // Slow path: build unescaped string
+  final buffer = StringBuffer();
+  final len = value.length;
+  var i = 0;
+  while (i < len) {
+    final c = value.codeUnitAt(i);
+    if (c == _kBackslash && i + 1 < len) {
+      final next = value.codeUnitAt(i + 1);
+      switch (next) {
+        case 0x6E: // n
+          buffer.writeCharCode(_kNewline);
+          i += 2;
+        case 0x72: // r
+          buffer.writeCharCode(_kCarriageReturn);
+          i += 2;
+        case 0x74: // t
+          buffer.writeCharCode(_kTab);
+          i += 2;
+        case _kQuote:
+          buffer.writeCharCode(_kQuote);
+          i += 2;
+        case _kBackslash:
+          buffer.writeCharCode(_kBackslash);
+          i += 2;
+        default:
+          buffer.writeCharCode(c);
+          i++;
+      }
+    } else {
+      buffer.writeCharCode(c);
+      i++;
+    }
+  }
+  return buffer.toString();
 }
 
 /// Quotes a string if necessary for TOON format.
@@ -61,13 +143,25 @@ String quoteString(String value, String delimiter) {
 ///
 /// Also unescapes any escape sequences in the string
 String unquoteString(String value) {
-  final trimmed = value.trim();
+  // Find actual content bounds (skip leading/trailing whitespace)
+  var start = 0;
+  var end = value.length;
 
-  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    return unescapeString(trimmed.substring(1, trimmed.length - 1));
+  while (start < end && value.codeUnitAt(start) == _kSpace) {
+    start++;
+  }
+  while (end > start && value.codeUnitAt(end - 1) == _kSpace) {
+    end--;
   }
 
-  return trimmed;
+  final len = end - start;
+  if (len >= 2 &&
+      value.codeUnitAt(start) == _kQuote &&
+      value.codeUnitAt(end - 1) == _kQuote) {
+    return unescapeString(value.substring(start + 1, end - 1));
+  }
+
+  return start == 0 && end == value.length ? value : value.substring(start, end);
 }
 
 /// Checks if a string needs to be quoted in TOON format.
@@ -80,26 +174,102 @@ String unquoteString(String value) {
 /// - Starts with "- " (list marker)
 /// - Looks like a structural token ([, {)
 bool needsQuoting(String value, String delimiter) {
-  if (value.isEmpty) return true;
-  if (value.startsWith(' ') || value.endsWith(' ')) return true;
-  if (value.contains(delimiter)) return true;
-  if (value.contains(':')) return true;
-  if (value.contains('"')) return true;
-  if (value.contains('\\')) return true;
-  if (value.contains('\n') || value.contains('\r') || value.contains('\t'))
+  final len = value.length;
+  if (len == 0) return true;
+
+  // Check leading/trailing spaces
+  if (value.codeUnitAt(0) == _kSpace || value.codeUnitAt(len - 1) == _kSpace) {
     return true;
-  if (value.startsWith('- ')) return true;
+  }
+
+  // Check for "- " prefix (list marker)
+  if (len >= 2 && value.codeUnitAt(0) == _kDash && value.codeUnitAt(1) == _kSpace) {
+    return true;
+  }
+
+  // Check for structural tokens [...]  or {...}
+  if (len >= 2) {
+    final first = value.codeUnitAt(0);
+    final last = value.codeUnitAt(len - 1);
+    if ((first == _kOpenBracket && last == _kCloseBracket) ||
+        (first == _kOpenBrace && last == _kCloseBrace)) {
+      return true;
+    }
+  }
+
+  // Check for reserved words
   if (value == 'true' || value == 'false' || value == 'null') return true;
-  if (looksLikeNumber(value)) return true;
-  if (RegExp(r'^\[.*\]$').hasMatch(value)) return true;
-  if (RegExp(r'^\{.*\}$').hasMatch(value)) return true;
+
+  // Check for number-like values
+  if (_looksLikeNumberFast(value)) return true;
+
+  // Get delimiter code for comparison
+  final delimCode = delimiter.codeUnitAt(0);
+
+  // Single pass for special characters
+  for (var i = 0; i < len; i++) {
+    final c = value.codeUnitAt(i);
+    if (c == delimCode ||
+        c == _kColon ||
+        c == _kQuote ||
+        c == _kBackslash ||
+        c == _kNewline ||
+        c == _kCarriageReturn ||
+        c == _kTab) {
+      return true;
+    }
+  }
 
   return false;
 }
 
+/// Fast number detection without parsing
+bool _looksLikeNumberFast(String value) {
+  final len = value.length;
+  if (len == 0) return false;
+
+  var i = 0;
+  var c = value.codeUnitAt(i);
+
+  // Optional sign
+  if (c == _kDash || c == 0x2B) {
+    // - or +
+    i++;
+    if (i >= len) return false;
+    c = value.codeUnitAt(i);
+  }
+
+  // Must start with digit
+  if (c < _k0 || c > _k9) return false;
+
+  // Check rest - allow digits, one dot, one e/E
+  var hasDot = false;
+  var hasExp = false;
+  while (i < len) {
+    c = value.codeUnitAt(i);
+    if (c >= _k0 && c <= _k9) {
+      i++;
+    } else if (c == _kDot && !hasDot && !hasExp) {
+      hasDot = true;
+      i++;
+    } else if ((c == 0x65 || c == 0x45) && !hasExp) {
+      // e or E
+      hasExp = true;
+      i++;
+      if (i < len) {
+        c = value.codeUnitAt(i);
+        if (c == _kDash || c == 0x2B) i++; // optional sign after e
+      }
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Checks if a string looks like a number.
 bool looksLikeNumber(String value) {
-  return num.tryParse(value) != null;
+  return _looksLikeNumberFast(value);
 }
 
 /// Checks if a string is a valid TOON identifier.
@@ -108,10 +278,25 @@ bool looksLikeNumber(String value) {
 /// - Start with a letter or underscore
 /// - Contain only letters, digits, underscores, or dots
 bool isValidIdentifier(String key) {
-  if (key.isEmpty) return false;
-  if (!RegExp(r'^[a-zA-Z_]').hasMatch(key)) return false;
-  return RegExp(r'^[a-zA-Z_][a-zA-Z0-9_.]*$').hasMatch(key);
+  final len = key.length;
+  if (len == 0) return false;
+
+  // First char must be letter or underscore
+  final first = key.codeUnitAt(0);
+  if (!_isLetter(first) && first != _kUnderscore) return false;
+
+  // Rest must be letter, digit, underscore, or dot
+  for (var i = 1; i < len; i++) {
+    final c = key.codeUnitAt(i);
+    if (!_isLetter(c) && !_isDigit(c) && c != _kUnderscore && c != _kDot) {
+      return false;
+    }
+  }
+  return true;
 }
+
+bool _isLetter(int c) => (c >= _kA && c <= _kZ) || (c >= _ka && c <= _kz);
+bool _isDigit(int c) => c >= _k0 && c <= _k9;
 
 // ============================================================================
 // Value Normalization and Parsing
@@ -138,18 +323,39 @@ dynamic normalizeValue(dynamic value) {
 ///
 /// Handles: null, booleans, numbers, and strings
 dynamic parseValue(String value) {
-  final trimmed = value.trim();
+  // Fast trim using indices
+  var start = 0;
+  var end = value.length;
 
-  if (trimmed.isEmpty) return null;
-  if (trimmed == 'null') return null;
-  if (trimmed == 'true') return true;
-  if (trimmed == 'false') return false;
+  while (start < end && value.codeUnitAt(start) == _kSpace) {
+    start++;
+  }
+  while (end > start && value.codeUnitAt(end - 1) == _kSpace) {
+    end--;
+  }
 
-  // Try number
+  final len = end - start;
+  if (len == 0) return null;
+
+  // Check for null/true/false by length first (fast rejection)
+  if (len == 4) {
+    final s = value.substring(start, end);
+    if (s == 'null') return null;
+    if (s == 'true') return true;
+  } else if (len == 5) {
+    if (value.substring(start, end) == 'false') return false;
+  }
+
+  // Get the trimmed substring only once
+  final trimmed = start == 0 && end == value.length
+      ? value
+      : value.substring(start, end);
+
+  // Try number (use num.tryParse for accuracy with edge cases)
   final numValue = num.tryParse(trimmed);
   if (numValue != null) return numValue;
 
-  // String (will be unquoted by caller if needed)
+  // String (will be unquoted)
   return unquoteString(trimmed);
 }
 
@@ -176,39 +382,36 @@ List<String> splitByDelimiter(String value, String delimiter) {
 /// Does not split on commas inside quoted strings
 List<String> splitByComma(String value) {
   final result = <String>[];
-  var current = StringBuffer();
+  final len = value.length;
+  var start = 0;
   var inQuotes = false;
   var escapeNext = false;
 
-  for (var i = 0; i < value.length; i++) {
+  for (var i = 0; i < len; i++) {
+    final c = value.codeUnitAt(i);
+
     if (escapeNext) {
-      current.write(value[i]);
       escapeNext = false;
       continue;
     }
 
-    if (value[i] == '\\') {
+    if (c == _kBackslash) {
       escapeNext = true;
-      current.write(value[i]);
       continue;
     }
 
-    if (value[i] == '"') {
+    if (c == _kQuote) {
       inQuotes = !inQuotes;
-      current.write(value[i]);
       continue;
     }
 
-    if (!inQuotes && value[i] == ',') {
-      result.add(current.toString());
-      current = StringBuffer();
-      continue;
+    if (!inQuotes && c == _kComma) {
+      result.add(value.substring(start, i));
+      start = i + 1;
     }
-
-    current.write(value[i]);
   }
 
-  result.add(current.toString());
+  result.add(value.substring(start));
   return result;
 }
 

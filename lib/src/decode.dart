@@ -2,6 +2,10 @@ import 'options.dart';
 import 'types.dart';
 import 'utils.dart';
 
+// Cached RegExp patterns to avoid repeated compilation in hot loops
+final _arrayKeyPattern = RegExp(r'^(.+?)(\[#?\d+[\t|]?\](?:\{[^}]+\})?)$');
+final _arrayHeaderPattern = RegExp(r'^\[#?(\d+)([\t|])?\](?:\{([^}]+)\})?:(.*)$');
+
 /// Decodes a TOON-formatted string back to a Dart value.
 ///
 /// Parses TOON (Token-Oriented Object Notation) format and converts it to
@@ -120,9 +124,7 @@ class _ToonDecoder {
       final afterColon = trimmed.substring(colonIndex + 1).trim();
 
       // Check if key has array header (e.g., "tags[3]" or "items[2]{id,name}")
-      final arrayMatch = RegExp(
-        r'^(.+?)(\[#?\d+[\t|]?\](?:\{[^}]+\})?)$',
-      ).firstMatch(keyPart);
+      final arrayMatch = _arrayKeyPattern.firstMatch(keyPart);
 
       if (arrayMatch != null) {
         // Key with inline array header
@@ -229,7 +231,9 @@ class _ToonDecoder {
     String delimiter,
     int baseIndent,
   ) {
-    final result = <Map<String, dynamic>>[];
+    // Pre-allocate with known capacity
+    final result = List<Map<String, dynamic>>.generate(length, (_) => <String, dynamic>{}, growable: false);
+    final fieldCount = fields.length;
 
     for (var i = 0; i < length; i++) {
       if (_currentLine >= _lines.length) {
@@ -238,7 +242,7 @@ class _ToonDecoder {
             'Array length mismatch: expected $length, got $i',
           );
         }
-        break;
+        return result.sublist(0, i);
       }
 
       final line = _lines[_currentLine];
@@ -250,22 +254,22 @@ class _ToonDecoder {
             'Array length mismatch: expected $length, got $i',
           );
         }
-        break;
+        return result.sublist(0, i);
       }
 
       final trimmed = line.trim();
       final values = splitByDelimiter(trimmed, delimiter);
 
-      if (options.strict && values.length != fields.length) {
+      if (options.strict && values.length != fieldCount) {
         throw ToonException('Field count mismatch at line $_currentLine');
       }
 
-      final row = <String, dynamic>{};
-      for (var j = 0; j < fields.length && j < values.length; j++) {
+      final row = result[i];
+      final valLen = values.length;
+      for (var j = 0; j < fieldCount && j < valLen; j++) {
         row[fields[j]] = parseValue(values[j]);
       }
 
-      result.add(row);
       _currentLine++;
     }
 
@@ -500,9 +504,7 @@ class _ToonDecoder {
   }
 
   Map<String, dynamic>? _parseArrayHeader(String line) {
-    final match = RegExp(
-      r'^\[#?(\d+)([\t|])?\](?:\{([^}]+)\})?:(.*)$',
-    ).firstMatch(line);
+    final match = _arrayHeaderPattern.firstMatch(line);
 
     if (match == null) return null;
 
@@ -537,24 +539,30 @@ class _ToonDecoder {
   int _findKeyValueSeparator(String line) {
     var inQuotes = false;
     var escapeNext = false;
+    final len = line.length;
 
-    for (var i = 0; i < line.length; i++) {
+    for (var i = 0; i < len; i++) {
+      final c = line.codeUnitAt(i);
+
       if (escapeNext) {
         escapeNext = false;
         continue;
       }
 
-      if (line[i] == '\\') {
+      if (c == 0x5C) {
+        // backslash
         escapeNext = true;
         continue;
       }
 
-      if (line[i] == '"') {
+      if (c == 0x22) {
+        // quote
         inQuotes = !inQuotes;
         continue;
       }
 
-      if (!inQuotes && line[i] == ':') {
+      if (!inQuotes && c == 0x3A) {
+        // colon
         return i;
       }
     }
@@ -564,8 +572,10 @@ class _ToonDecoder {
 
   int _getIndent(String line) {
     var count = 0;
-    for (var i = 0; i < line.length; i++) {
-      if (line[i] == ' ') {
+    final len = line.length;
+    for (var i = 0; i < len; i++) {
+      if (line.codeUnitAt(i) == 0x20) {
+        // space
         count++;
       } else {
         break;

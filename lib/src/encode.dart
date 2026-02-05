@@ -39,6 +39,12 @@ class _ToonEncoder {
   final StringBuffer _buffer = StringBuffer();
   int _indentLevel = 0;
 
+  // Pre-computed indent strings for common depth levels (avoids ' ' * n allocations)
+  late final List<String> _indentCache = List.generate(
+    16, // Max cached depth
+    (level) => ' ' * (options.indent * level),
+  );
+
   _ToonEncoder(this.options);
 
   String encode(JsonValue value) {
@@ -56,13 +62,13 @@ class _ToonEncoder {
   void _encodeObject(Map<dynamic, dynamic> obj, {bool inline = false}) {
     if (obj.isEmpty) return;
 
-    final entries = obj.entries.toList();
-    for (var i = 0; i < entries.length; i++) {
-      final entry = entries[i];
+    var isFirst = true;
+    for (final entry in obj.entries) {
       final key = _encodeKey(entry.key.toString());
       final value = normalizeValue(entry.value);
 
-      if (!inline && i > 0) _buffer.write('\n');
+      if (!inline && !isFirst) _buffer.write('\n');
+      isFirst = false;
       if (!inline) _writeIndent();
 
       _buffer.write(key);
@@ -336,11 +342,16 @@ class _ToonEncoder {
     final firstMap = list.first as Map;
     if (firstMap.isEmpty) return false;
 
-    final keys = firstMap.keys.toSet();
+    final keyCount = firstMap.keys.length;
+    final referenceKeys = firstMap.keys.toList(); // Single list allocation
 
     for (final item in list) {
       if (item is! Map) return false;
-      if (!_setEquals(item.keys.toSet(), keys)) return false;
+      if (item.keys.length != keyCount) return false; // Fast length check
+
+      for (final key in referenceKeys) {
+        if (!item.containsKey(key)) return false; // O(1) lookup
+      }
 
       for (final value in item.values) {
         final normalized = normalizeValue(value);
@@ -351,12 +362,11 @@ class _ToonEncoder {
     return true;
   }
 
-  bool _setEquals(Set a, Set b) {
-    if (a.length != b.length) return false;
-    return a.every((e) => b.contains(e));
-  }
-
   void _writeIndent() {
-    _buffer.write(' ' * (options.indent * _indentLevel));
+    if (_indentLevel < _indentCache.length) {
+      _buffer.write(_indentCache[_indentLevel]);
+    } else {
+      _buffer.write(' ' * (options.indent * _indentLevel));
+    }
   }
 }
